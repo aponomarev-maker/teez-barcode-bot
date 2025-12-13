@@ -1,130 +1,100 @@
-import telegram
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
-import requests
-from barcode import Code128
-from barcode.writer import ImageWriter
-from io import BytesIO
 import os
-import telegram.ext # Добавляем для CommandHandler
+import requests
+from telegram.ext import Application, MessageHandler, filters
+from telegram import Update
+import logging
 
-# --- Настройки: Получение ключей из переменных окружения ---
-# ВАШИ КЛЮЧИ БУДУТ ПЕРЕДАНЫ СЕРВЕРОМ RAILWAY
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") 
+# Настройка логирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+
+# Глобальные переменные (токен и URL берутся из переменных окружения Render)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GOOGLE_SHEETS_API_URL = os.environ.get("GOOGLE_SHEETS_API_URL")
 
-# --- Генерация штрихкода (CODE-128) ---
-def generate_barcode_image(data: str) -> BytesIO:
-    """
-    Генерирует изображение штрихкода CODE-128 с уменьшенной высотой 
-    и возвращает его в виде BytesIO.
-    (Исправлена ошибка 'module_height' для совместимости с python-barcode)
-    """
-    writer = ImageWriter() 
-    
-    code128 = Code128(data, writer=writer)
-    buffer = BytesIO()
-    
-    # Передаем настройки (module_height) в метод .write()
-    # Уменьшаем высоту до 6 для компактности.
-    options = {'module_height': 6, 'write_text': True} 
-    
-    code128.write(buffer, options)
-    buffer.seek(0)
-    return buffer
+# Функция для запроса данных из Google Apps Script
+def find_order_info(order_number):
+    """Отправляет запрос на Google Apps Script и возвращает готовое сообщение."""
+    if not GOOGLE_SHEETS_API_URL:
+        return "⚠️ Ошибка конфигурации: GOOGLE_SHEETS_API_URL не задан."
 
-# --- Обработчик команды /start ---
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        # Отправляем номер заказа как параметр 'order'
+        response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=10)
+        response.raise_for_status()  # Вызовет исключение, если HTTP-код 4xx или 5xx
+
+        response_data = response.json()
+        
+        # --- ИСПРАВЛЕННАЯ ЛОГИКА ОБРАБОТКИ ОТВЕТА ---
+        
+        # 1. Обработка ошибок, возвращенных Apps Script (например, "ШК не найден" или "Лист не найден")
+        if 'error' in response_data:
+            # Для ошибок поиска ШК:
+            if "не найден" in response_data['error'] or "не найдены" in response_data['error']:
+                return f"❌ {response_data['error']}"
+            return f"❌ Ошибка данных: {response_data['error']}"
+
+        # 2. Обработка готового сообщения, возвращенного Apps Script (ключ 'text')
+        # Новый код GAS возвращает форматированный ответ под ключом 'text'
+        if 'text' in response_data:
+            return response_data['text']
+            
+        # 3. Если ответ пустой или не содержит ожидаемых ключей
+        return "⚠️ Неизвестный формат ответа от сервера данных."
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Ошибка HTTP-запроса к Google Apps Script: {e}")
+        return "❌ Ошибка связи с сервером данных. Попробуйте позже."
+    except ValueError:
+        logging.error(f"Ошибка декодирования JSON: {response.text}")
+        return "❌ Ошибка: Ответ сервера данных не является корректным JSON."
+    except Exception as e:
+        logging.error(f"Неизвестная ошибка при обработке запроса: {e}")
+        return "❌ Произошла непредвиденная ошибка."
+
+# Асинхронный обработчик сообщений
+async def message_handler(update: Update, context):
+    """Обрабатывает входящие сообщения, содержащие только текст."""
+    order_number = update.message.text.strip()
+    
+    # Игнорируем команду /start, если она попала сюда
+    if order_number.lower() == '/start':
+        return
+
+    # Получаем информацию о заказе
+    info_message = find_order_info(order_number)
+
+    # Отправляем ответ пользователю
+    await update.message.reply_text(
+        info_message, 
+        parse_mode='Markdown' # Используем Markdown для жирного текста (**) и блоков кода (```)
+    )
+
+async def start_command(update: Update, context):
     """Отправляет приветственное сообщение при команде /start."""
     welcome_message = (
-        "Потерялся Акт отгрузки? Не грусти! Я всё исправлю! 👋\n\n"
-        "**Пришли мне номер заказа (ШК)**, и я найду соответствующие акты и сгенерирую для тебя штрихкоды."
+        "👋 Привет! Я бот для проверки актов. "
+        "Отправьте мне **номер заказа** или **ШК** для поиска информации об актах."
     )
-    await update.message.reply_text(welcome_message, parse_mode=telegram.constants.ParseMode.MARKDOWN)
+    await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
-
-# --- Обработчик сообщений ---
-async def handle_barcode_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает любое текстовое сообщение как номер заказа и взаимодействует с G/A/S."""
-    
-    order_number = update.message.text.strip().upper()
-    
-    if not order_number:
-        await update.message.reply_text("Пожалуйста, отправьте номер заказа (ШК).")
+def main():
+    """Запускает бота."""
+    if not TELEGRAM_BOT_TOKEN:
+        logging.error("TELEGRAM_BOT_TOKEN не найден. Бот не может быть запущен.")
         return
 
-    await update.message.reply_text(f"🔍 Ищу данные для заказа: **{order_number}**...", parse_mode=telegram.constants.ParseMode.MARKDOWN)
-
-    # 1. Запрос к Google Sheets API
-    try:
-        # Увеличена задержка до 45 секунд для предотвращения таймаутов G/A/S
-        response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=45) 
-        
-        response.raise_for_status() 
-        data = response.json()
-        
-    except requests.exceptions.RequestException as e:
-        # Сетевая/HTTP ошибка
-        print(f"ОШИБКА HTTP/СЕТЬ: {e}")
-        await update.message.reply_text("❌ Ошибка при обращении к серверу данных. Попробуйте позже.")
-        return
-        
-    except ValueError:
-        # Ошибка декодирования JSON
-        print(f"ОШИБКА ДЕКОДИРОВАНИЯ JSON: {response.text}")
-        await update.message.reply_text("❌ Ошибка: Получен некорректный ответ от сервера данных (не JSON).")
-        return
-
-
-    # 2. Обработка ответа 
-    if 'error' in data:
-        await update.message.reply_text(f"❌ Ошибка данных: {data['error']}")
-        return
-    
-    act_to_warehouse = data.get('actToWarehouse')
-    act_from_warehouse = data.get('actFromWarehouse')
-    
-    if not act_to_warehouse or not act_from_warehouse:
-        await update.message.reply_text(f"⚠️ В таблице найдены пустые данные актов для заказа **{order_number}**.")
-        return
-
-    # 3. Генерация и отправка штрихкодов
-    try:
-        # Акт на склад
-        img_to_buffer = generate_barcode_image(act_to_warehouse)
-        caption_to = f"✅ **Акт на склад:** `{act_to_warehouse}`"
-        await update.message.reply_photo(photo=img_to_buffer, caption=caption_to, 
-                                         parse_mode=telegram.constants.ParseMode.MARKDOWN)
-
-        # Акт со склада
-        img_from_buffer = generate_barcode_image(act_from_warehouse)
-        caption_from = f"✅ **Акт со склада:** `{act_from_warehouse}`"
-        await update.message.reply_photo(photo=img_from_buffer, caption=caption_from, 
-                                         parse_mode=telegram.constants.ParseMode.MARKDOWN)
-
-    except Exception as e:
-        print(f"Ошибка генерации или отправки штрихкода: {e}")
-        await update.message.reply_text("❌ Произошла внутренняя ошибка при генерации штрихкода.")
-
-# --- Основная функция запуска бота ---
-def main() -> None:
-    """Запуск бота."""
-    # Проверка, что ключи доступны (важно для хостинга)
-    if not TELEGRAM_BOT_TOKEN or not GOOGLE_SHEETS_API_URL:
-        print("ОШИБКА: Токены не загружены из переменных окружения. Проверьте настройки Railway.")
-        return
-
+    # Создаем Application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # 1. Обработчик команды /start
-    application.add_handler(telegram.ext.CommandHandler("start", start_command)) 
+    # Регистрируем обработчики команд и сообщений
+    application.add_handler(telegram.ext.CommandHandler("start", start_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    # 2. Обработчик: любое текстовое сообщение, которое не является командой
-    text_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_barcode_request)
-    application.add_handler(text_handler)
+    # Запускаем бота
+    logging.info("Бот запущен...")
+    application.run_polling(poll_interval=3)
 
-    print("Бот запущен...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
