@@ -24,14 +24,13 @@ def generate_barcode_image(data_text):
         
     buffer = BytesIO()
     
-    # Устанавливаем параметры (если нужно) для лучшего качества и отступов
     writer_options = {
-        'module_width': 0.3,  # Ширина модулей
-        'module_height': 15,  # Высота штрихов
-        'write_text': True,   # Включить текст под штрихкодом
-        'font_size': 12,      # Размер шрифта текста
-        'text_distance': 5,   # Расстояние между штрихами и текстом
-        'quiet_zone': 4,      # Отступы по краям
+        'module_width': 0.3,
+        'module_height': 15,
+        'write_text': True,  # Обязательно: номер будет на самой картинке
+        'font_size': 12,
+        'text_distance': 5,
+        'quiet_zone': 4,
     }
 
     code128 = Code128(data_text, writer=ImageWriter())
@@ -46,7 +45,6 @@ def find_order_info(order_number):
         return {'error': "⚠️ Ошибка конфигурации: GOOGLE_SHEETS_API_URL не задан."}
 
     try:
-        # Увеличенный таймаут до 30 секунд
         response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=30)
         response.raise_for_status()
 
@@ -84,7 +82,7 @@ async def message_handler(update: Update, context):
     act_to_data = response_data.get('actToWarehouse', '').strip()
     act_from_data = response_data.get('actFromWarehouse', '').strip()
 
-    # Сначала отправляем главное текстовое сообщение (с информацией об ошибке/успехе)
+    # Сначала отправляем главное текстовое сообщение (об успехе/ошибке)
     await update.message.reply_text(info_message, parse_mode='Markdown')
     
     # 3. Отправка штрихкодов в виде изображений
@@ -95,7 +93,9 @@ async def message_handler(update: Update, context):
         if image_buffer:
             await update.message.reply_photo(
                 photo=InputFile(image_buffer, filename='act_to_warehouse.png'),
-                caption=f"Акт на склад: `{act_to_data}`"
+                # Номер акта в подписи (caption) — это наш копируемый элемент
+                caption=f"Акт на склад: `{act_to_data}`",
+                parse_mode='Markdown'
             )
 
     # Акт со склада
@@ -104,7 +104,9 @@ async def message_handler(update: Update, context):
         if image_buffer:
             await update.message.reply_photo(
                 photo=InputFile(image_buffer, filename='act_from_warehouse.png'),
-                caption=f"Акт со склада: `{act_from_data}`"
+                # Номер акта в подписи (caption) — это наш копируемый элемент
+                caption=f"Акт со склада: `{act_from_data}`",
+                parse_mode='Markdown'
             )
 
 
