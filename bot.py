@@ -22,7 +22,7 @@ def find_order_info(order_number):
 
     try:
         # Отправляем номер заказа как параметр 'order'
-        response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=10)
+        response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=90)
         response.raise_for_status()  # Вызовет исключение, если HTTP-код 4xx или 5xx
 
         response_data = response.json()
@@ -99,3 +99,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
