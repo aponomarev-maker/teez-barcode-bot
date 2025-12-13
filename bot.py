@@ -1,8 +1,9 @@
 import os
 import requests
-from telegram.ext import Application, MessageHandler, filters
-from telegram import Update
 import logging
+from telegram import Update
+# Импортируем нужные классы напрямую из telegram.ext, чтобы не использовать префикс 'telegram.ext'
+from telegram.ext import Application, MessageHandler, filters, CommandHandler 
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,9 +27,7 @@ def find_order_info(order_number):
 
         response_data = response.json()
         
-        # --- ИСПРАВЛЕННАЯ ЛОГИКА ОБРАБОТКИ ОТВЕТА ---
-        
-        # 1. Обработка ошибок, возвращенных Apps Script (например, "ШК не найден" или "Лист не найден")
+        # 1. Обработка ошибок, возвращенных Apps Script (ключ 'error')
         if 'error' in response_data:
             # Для ошибок поиска ШК:
             if "не найден" in response_data['error'] or "не найдены" in response_data['error']:
@@ -89,11 +88,13 @@ def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Регистрируем обработчики команд и сообщений
-    application.add_handler(telegram.ext.CommandHandler("start", start_command))
+    # *** ИСПРАВЛЕННЫЕ СТРОКИ: теперь используется CommandHandler/MessageHandler напрямую ***
+    application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     # Запускаем бота
     logging.info("Бот запущен...")
+    # Используем run_polling, чтобы Render Worker не закрылся
     application.run_polling(poll_interval=3)
 
 if __name__ == "__main__":
