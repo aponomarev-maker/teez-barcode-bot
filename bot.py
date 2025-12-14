@@ -38,14 +38,13 @@ def generate_barcode_image(data_text):
     buffer.seek(0)
     return buffer
 
-# --- НОВАЯ ФУНКЦИЯ: Получение метки времени ---
+# --- НОВАЯ ФУНКЦИЯ: Получение метки времени (без изменений) ---
 def fetch_db_timestamp():
     """Отправляет быстрый запрос на GAS для получения метки времени обновления данных."""
     if not GOOGLE_SHEETS_API_URL:
-        return 'Н/Д' # Возврат по умолчанию
+        return 'Н/Д'
 
     try:
-        # Отправляем запрос с новым параметром 'get_timestamp=true', таймаут 5 секунд
         response = requests.get(GOOGLE_SHEETS_API_URL, params={'get_timestamp': 'true'}, timeout=5) 
         response.raise_for_status()
 
@@ -66,7 +65,6 @@ def find_order_info(order_number):
         return {'error': "⚠️ Ошибка конфигурации: GOOGLE_SHEETS_API_URL не задан."}
 
     try:
-        # Увеличенный таймаут до 90 секунд для основного запроса
         response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=90)
         response.raise_for_status()
 
@@ -91,31 +89,29 @@ async def message_handler(update: Update, context):
     if order_number.lower() == '/start':
         return
 
-    # 1. Получаем метку времени перед отправкой сообщения
+    # 1. Получаем метку времени и отправляем немедленный ответ
     db_timestamp = fetch_db_timestamp() 
-    
-    # 2. Формируем и отправляем немедленный ответ с меткой времени
     initial_message = (
         f"🔍 Ищу Акты для заказа: **{order_number}**\n"
-        f"База данных от {db_timestamp}"
+        f"💾 База данных от {db_timestamp}"
     )
-    
     await update.message.reply_text(initial_message, parse_mode='Markdown')
 
-    # 3. Получаем JSON-ответ от GAS (основной запрос)
+    # 2. Получаем JSON-ответ от GAS (основной запрос)
     response_data = find_order_info(order_number)
     
-    # 4. Обработка ошибки
+    # 3. Обработка ошибки
     if 'error' in response_data:
         await update.message.reply_text(response_data['error'])
         return
 
-    # 5. Получение данных и текста из ответа GAS
+    # 4. Получение данных и текста
     info_message = response_data.get('text', "Информация не найдена.")
     act_to_data = response_data.get('actToWarehouse', '').strip()
     act_from_data = response_data.get('actFromWarehouse', '').strip()
+    movement_status = response_data.get('movementStatus', '').strip() # НОВЫЕ ДАННЫЕ
 
-    # Сначала отправляем главное текстовое сообщение (об успехе/ошибке)
+    # 5. Сначала отправляем главное текстовое сообщение (об успехе/ошибке)
     await update.message.reply_text(info_message, parse_mode='Markdown')
     
     # 6. Отправка штрихкодов в виде изображений
@@ -139,6 +135,14 @@ async def message_handler(update: Update, context):
                 caption=f"Акт со склада: `{act_from_data}`",
                 parse_mode='Markdown'
             )
+            
+    # 7. Отправляем статусы движения (последнее сообщение)
+    if movement_status:
+        # Используем <pre> для моноширинного шрифта, чтобы выравнивание не сбивалось
+        await update.message.reply_text(
+            f"**🗓️ Статусы движения заказа:**\n\n```\n{movement_status}```",
+            parse_mode='Markdown'
+        )
 
 
 async def start_command(update: Update, context):
@@ -165,4 +169,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
