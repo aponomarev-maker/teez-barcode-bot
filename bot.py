@@ -97,7 +97,7 @@ async def message_handler(update: Update, context):
     # 2. Формируем и отправляем немедленный ответ с меткой времени
     initial_message = (
         f"🔍 Ищу Акты для заказа: **{order_number}**\n"
-        f"💾 База данных от {db_timestamp}"
+        f"База данных от {db_timestamp}"
     )
     
     await update.message.reply_text(initial_message, parse_mode='Markdown')
@@ -165,3 +165,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
