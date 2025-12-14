@@ -46,7 +46,7 @@ def find_order_info(order_number):
 
     try:
         # Увеличенный таймаут до 30 секунд
-        response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=30)
+        response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=90)
         response.raise_for_status()
 
         response_data = response.json()
@@ -137,3 +137,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
