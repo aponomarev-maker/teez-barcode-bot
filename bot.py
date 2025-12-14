@@ -27,7 +27,7 @@ def generate_barcode_image(data_text):
     writer_options = {
         'module_width': 0.3,
         'module_height': 15,
-        'write_text': True,  # Обязательно: номер будет на самой картинке
+        'write_text': True,
         'font_size': 12,
         'text_distance': 5,
         'quiet_zone': 4,
@@ -45,6 +45,7 @@ def find_order_info(order_number):
         return {'error': "⚠️ Ошибка конфигурации: GOOGLE_SHEETS_API_URL не задан."}
 
     try:
+        # Увеличенный таймаут до 30 секунд
         response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=30)
         response.raise_for_status()
 
@@ -68,6 +69,9 @@ async def message_handler(update: Update, context):
     
     if order_number.lower() == '/start':
         return
+
+    # Отправляем немедленный ответ с новым текстом "Ищу Акты"
+    await update.message.reply_text(f"🔍 Ищу Акты для заказа: **{order_number}**...", parse_mode='Markdown')
 
     # Получаем JSON-ответ от GAS
     response_data = find_order_info(order_number)
@@ -93,7 +97,6 @@ async def message_handler(update: Update, context):
         if image_buffer:
             await update.message.reply_photo(
                 photo=InputFile(image_buffer, filename='act_to_warehouse.png'),
-                # Номер акта в подписи (caption) — это наш копируемый элемент
                 caption=f"Акт на склад: `{act_to_data}`",
                 parse_mode='Markdown'
             )
@@ -104,7 +107,6 @@ async def message_handler(update: Update, context):
         if image_buffer:
             await update.message.reply_photo(
                 photo=InputFile(image_buffer, filename='act_from_warehouse.png'),
-                # Номер акта в подписи (caption) — это наш копируемый элемент
                 caption=f"Акт со склада: `{act_from_data}`",
                 parse_mode='Markdown'
             )
@@ -114,7 +116,7 @@ async def start_command(update: Update, context):
     """Отправляет приветственное сообщение при команде /start."""
     welcome_message = (
         "👋 Привет! Я бот для проверки актов. "
-        "Пришли мне **номер заказа** или **ШК**, и я найду соответствующие акты и сгенерирую для тебя штрихкоды."
+        "Пришли мне **номер заказа** и я найду соответствующие акты и сгенерирую для тебя штрихкоды."
     )
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
@@ -130,7 +132,8 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     logging.info("Бот запущен...")
-    application.run_polling(poll_interval=3)
+    # poll_interval установлен на 5 секунд для предотвращения двойных ответов
+    application.run_polling(poll_interval=5)
 
 if __name__ == "__main__":
     main()
