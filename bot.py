@@ -93,7 +93,7 @@ async def message_handler(update: Update, context):
     db_timestamp = fetch_db_timestamp() 
     initial_message = (
         f"🔍 Ищу Акты для заказа: **{order_number}**\n"
-        f"💾 База данных от {db_timestamp}"
+        f"База данных от {db_timestamp}"
     )
     await update.message.reply_text(initial_message, parse_mode='Markdown')
 
@@ -138,9 +138,13 @@ async def message_handler(update: Update, context):
             
     # 7. Отправляем статусы движения (последнее сообщение)
     if movement_status:
-        # Используем <pre> для моноширинного шрифта, чтобы выравнивание не сбивалось
+        # ИЗМЕНЕНИЕ: Убираем тройные кавычки (моноширинный шрифт) и добавляем эмодзи
+        status_message = (
+            f"**🗓️ Статусы движения заказа:**\n\n"
+            f"{movement_status}"
+        )
         await update.message.reply_text(
-            f"**🗓️ Статусы движения заказа:**\n\n```\n{movement_status}```",
+            status_message,
             parse_mode='Markdown'
         )
 
