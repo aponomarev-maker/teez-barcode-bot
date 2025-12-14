@@ -109,7 +109,7 @@ async def message_handler(update: Update, context):
     info_message = response_data.get('text', "Информация не найдена.")
     act_to_data = response_data.get('actToWarehouse', '').strip()
     act_from_data = response_data.get('actFromWarehouse', '').strip()
-    movement_status = response_data.get('movementStatus', '').strip() # НОВЫЕ ДАННЫЕ
+    movement_status = response_data.get('movementStatus', '').strip() 
 
     # 5. Сначала отправляем главное текстовое сообщение (об успехе/ошибке)
     await update.message.reply_text(info_message, parse_mode='Markdown')
@@ -138,16 +138,16 @@ async def message_handler(update: Update, context):
             
     # 7. Отправляем статусы движения (последнее сообщение)
     if movement_status:
-        # ИЗМЕНЕНИЕ: Убираем тройные кавычки (моноширинный шрифт) и добавляем эмодзи
+        # **Заголовок**
+        # \n\n{movement_status} - передает текст, сгенерированный с ** и :
         status_message = (
-            f"**🗓️ Статусы движения заказа:**\n\n"
+            f"**🗓️ Статусы движения заказа:**\n\n" 
             f"{movement_status}"
         )
         await update.message.reply_text(
             status_message,
             parse_mode='Markdown'
         )
-
 
 async def start_command(update: Update, context):
     """Отправляет приветственное сообщение при команде /start."""
@@ -173,3 +173,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
