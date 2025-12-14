@@ -138,15 +138,13 @@ async def message_handler(update: Update, context):
             
     # 7. Отправляем статусы движения (последнее сообщение)
     if movement_status:
-        # **Заголовок**
-        # \n\n{movement_status} - передает текст, сгенерированный с ** и :
         status_message = (
             f"**🗓️ Статусы движения заказа:**\n\n" 
             f"{movement_status}"
         )
         await update.message.reply_text(
             status_message,
-            parse_mode='Markdown'
+            parse_mode='Markdown' # Указываем, что нужно парсить Markdown
         )
 
 async def start_command(update: Update, context):
@@ -173,4 +171,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
