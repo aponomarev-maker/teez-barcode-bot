@@ -38,14 +38,35 @@ def generate_barcode_image(data_text):
     buffer.seek(0)
     return buffer
 
-# --- Функция для запроса данных из Google Apps Script ---
+# --- НОВАЯ ФУНКЦИЯ: Получение метки времени ---
+def fetch_db_timestamp():
+    """Отправляет быстрый запрос на GAS для получения метки времени обновления данных."""
+    if not GOOGLE_SHEETS_API_URL:
+        return 'Н/Д' # Возврат по умолчанию
+
+    try:
+        # Отправляем запрос с новым параметром 'get_timestamp=true', таймаут 5 секунд
+        response = requests.get(GOOGLE_SHEETS_API_URL, params={'get_timestamp': 'true'}, timeout=5) 
+        response.raise_for_status()
+
+        response_data = response.json()
+        return response_data.get('timestamp', 'Н/Д (некорректный ответ)')
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Ошибка HTTP-запроса при получении метки времени: {e}")
+        return 'Н/Д (ошибка связи)'
+    except Exception as e:
+        logging.error(f"Неизвестная ошибка при получении метки времени: {e}")
+        return 'Н/Д (ошибка)'
+
+# --- Функция для запроса данных из Google Apps Script (основная) ---
 def find_order_info(order_number):
     """Отправляет запрос на Google Apps Script и возвращает JSON с данными и текстом."""
     if not GOOGLE_SHEETS_API_URL:
         return {'error': "⚠️ Ошибка конфигурации: GOOGLE_SHEETS_API_URL не задан."}
 
     try:
-        # Увеличенный таймаут до 30 секунд
+        # Увеличенный таймаут до 90 секунд для основного запроса
         response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=90)
         response.raise_for_status()
 
@@ -70,18 +91,26 @@ async def message_handler(update: Update, context):
     if order_number.lower() == '/start':
         return
 
-    # Отправляем немедленный ответ с новым текстом "Ищу Акты"
-    await update.message.reply_text(f"🔍 Ищу Акты для заказа: **{order_number}**...", parse_mode='Markdown')
+    # 1. Получаем метку времени перед отправкой сообщения
+    db_timestamp = fetch_db_timestamp() 
+    
+    # 2. Формируем и отправляем немедленный ответ с меткой времени
+    initial_message = (
+        f"🔍 Ищу Акты для заказа: **{order_number}**\n"
+        f"💾 База данных от {db_timestamp}"
+    )
+    
+    await update.message.reply_text(initial_message, parse_mode='Markdown')
 
-    # Получаем JSON-ответ от GAS
+    # 3. Получаем JSON-ответ от GAS (основной запрос)
     response_data = find_order_info(order_number)
     
-    # 1. Обработка ошибки
+    # 4. Обработка ошибки
     if 'error' in response_data:
         await update.message.reply_text(response_data['error'])
         return
 
-    # 2. Получение данных и текста из ответа GAS
+    # 5. Получение данных и текста из ответа GAS
     info_message = response_data.get('text', "Информация не найдена.")
     act_to_data = response_data.get('actToWarehouse', '').strip()
     act_from_data = response_data.get('actFromWarehouse', '').strip()
@@ -89,7 +118,7 @@ async def message_handler(update: Update, context):
     # Сначала отправляем главное текстовое сообщение (об успехе/ошибке)
     await update.message.reply_text(info_message, parse_mode='Markdown')
     
-    # 3. Отправка штрихкодов в виде изображений
+    # 6. Отправка штрихкодов в виде изображений
     
     # Акт на склад
     if act_to_data:
@@ -132,9 +161,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     logging.info("Бот запущен...")
-    # poll_interval установлен на 5 секунд для предотвращения двойных ответов
     application.run_polling(poll_interval=5)
 
 if __name__ == "__main__":
     main()
-
