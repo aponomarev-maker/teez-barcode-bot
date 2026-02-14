@@ -5,30 +5,41 @@ import requests
 from barcode import Code128
 from barcode.writer import ImageWriter
 from io import BytesIO
+from datetime import datetime, timezone, timedelta
 import os
 import telegram.ext
 
 # ==============================================================================
-# НАСТРОЙКИ — все значения берутся из переменных окружения Railway
+# НАСТРОЙКИ — все значения берутся из переменных окружения Render
 # ==============================================================================
 
 TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPERSET_URL        = os.environ.get("SUPERSET_URL", "https://superset.dwh.teez.kz")
 SUPERSET_USERNAME   = os.environ.get("SUPERSET_USERNAME")
 SUPERSET_PASSWORD   = os.environ.get("SUPERSET_PASSWORD")
-
-# ID датасета (виртуальной таблицы) в Superset.
-# Как узнать: откройте нужный дашборд → Chart → ⋮ → Edit → вкладка Data,
-# в адресной строке будет /explore/?datasource_type=table&datasource_id=ХХХ
 SUPERSET_DATASET_ID = int(os.environ.get("SUPERSET_DATASET_ID", "0"))
+
+# Статусные поля в порядке движения заказа
+STATUS_FIELDS = [
+    "Принят на ПВЗ (Отправка)",
+    "Отгружен на склад",
+    "Принят на складе",
+    "Отгружен со склада",
+    "Готово к выдаче на ПВЗ/Принят на ПВ",
+    "Выдано",
+    "Возвращено отправителю",
+    "Срок хранения истек",
+]
+
+ONE_DAY_MS = 24 * 60 * 60 * 1000
+TZ_PLUS5   = timezone(timedelta(hours=5))
 
 
 # ==============================================================================
 # РАБОТА С SUPERSET API
 # ==============================================================================
 
-def get_superset_token() -> str | None:
-    """Авторизуется в Superset и возвращает access_token."""
+def get_superset_token():
     url = f"{SUPERSET_URL}/api/v1/security/login"
     payload = {
         "username": SUPERSET_USERNAME,
@@ -45,11 +56,41 @@ def get_superset_token() -> str | None:
         return None
 
 
-def get_order_data(order_number: str) -> dict | None:
-    """
-    Запрашивает из Superset данные по конкретному номеру заказа (external_id).
-    Возвращает словарь с полями или None при ошибке.
-    """
+def format_date_value(val):
+    if not val:
+        return None, None
+    try:
+        if isinstance(val, (int, float)):
+            dt = datetime.fromtimestamp(val / 1000, tz=TZ_PLUS5)
+            return dt.strftime("%d.%m.%Y %H:%M"), val
+        else:
+            s = str(val).replace("T", " ")[:16]
+            return s, None
+    except Exception:
+        return str(val)[:16], None
+
+
+def build_movement_status(row):
+    lines = []
+    prev_ts = None
+    for field in STATUS_FIELDS:
+        val = row.get(field)
+        if not val:
+            continue
+        date_str, ts = format_date_value(val)
+        if not date_str:
+            continue
+        delay = ""
+        if prev_ts is not None and ts is not None:
+            if (ts - prev_ts) > ONE_DAY_MS:
+                delay = " 🔴"
+        if ts is not None:
+            prev_ts = ts
+        lines.append(f"*{field}*: {date_str}{delay}")
+    return "\n".join(lines)
+
+
+def get_order_data(order_number):
     token = get_superset_token()
     if not token:
         return {"error": "Не удалось авторизоваться в базе данных."}
@@ -59,32 +100,27 @@ def get_order_data(order_number: str) -> dict | None:
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
-
-    # Запрашиваем только нужные столбцы и фильтруем по номеру заказа
     payload = {
-        "datasource": {
-            "id": SUPERSET_DATASET_ID,
-            "type": "table"
-        },
+        "datasource": {"id": SUPERSET_DATASET_ID, "type": "table"},
         "force": False,
         "queries": [
             {
                 "columns": [
                     "external_barcode",
                     "накладная на склад",
-                    "накладная со склада"
+                    "накладная со склада",
+                    "Принят на ПВЗ (Отправка)",
+                    "Отгружен на склад",
+                    "Принят на складе",
+                    "Отгружен со склада",
+                    "Готово к выдаче на ПВЗ/Принят на ПВ",
+                    "Выдано",
+                    "Возвращено отправителю",
+                    "Срок хранения истек"
                 ],
                 "filters": [
-                    {
-                        "col": "created_date",
-                        "op": "TEMPORAL_RANGE",
-                        "val": "No filter"
-                    },
-                    {
-                        "col": "external_barcode",
-                        "op": "==",
-                        "val": order_number
-                    }
+                    {"col": "created_date", "op": "TEMPORAL_RANGE", "val": "No filter"},
+                    {"col": "external_barcode", "op": "==", "val": order_number}
                 ],
                 "row_limit": 1
             }
@@ -96,7 +132,6 @@ def get_order_data(order_number: str) -> dict | None:
         response.raise_for_status()
         result = response.json()
 
-        # Разбираем ответ Superset
         data = result.get("result", [])
         if not data or not data[0].get("data"):
             return {"error": f"Заказ **{order_number}** не найден в базе данных."}
@@ -104,15 +139,16 @@ def get_order_data(order_number: str) -> dict | None:
         row = data[0]["data"][0]
         act_to   = str(row.get("накладная на склад") or "").strip()
         act_from = str(row.get("накладная со склада") or "").strip()
+        movement = build_movement_status(row)
 
         return {
             "actToWarehouse":   act_to,
-            "actFromWarehouse": act_from
+            "actFromWarehouse": act_from,
+            "movementStatus":   movement
         }
 
     except requests.exceptions.HTTPError as e:
         print(f"ОШИБКА HTTP SUPERSET: {e}")
-        print(f"URL запроса: {url}")
         print(f"Ответ сервера: {e.response.text[:500]}")
         return {"error": "Ошибка при запросе к базе данных (HTTP)."}
     except Exception as e:
@@ -124,8 +160,7 @@ def get_order_data(order_number: str) -> dict | None:
 # ГЕНЕРАЦИЯ ШТРИХКОДА CODE-128
 # ==============================================================================
 
-def generate_barcode_image(data: str) -> BytesIO:
-    """Генерирует штрихкод CODE-128 и возвращает его как BytesIO."""
+def generate_barcode_image(data):
     writer = ImageWriter()
     code128 = Code128(data, writer=writer)
     buffer = BytesIO()
@@ -139,70 +174,66 @@ def generate_barcode_image(data: str) -> BytesIO:
 # ==============================================================================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Приветственное сообщение."""
-    welcome_message = (
-        "Потерялся Акт отгрузки? Не грусти! Я всё исправлю! 👋\n\n"
-        "**Пришли мне номер заказа (ШК)**, и я найду соответствующие акты "
-        "и сгенерирую для тебя штрихкоды."
-    )
     await update.message.reply_text(
-        welcome_message, parse_mode=telegram.constants.ParseMode.MARKDOWN
+        "Потерялся Акт отгрузки? Не грусти! Я всё исправлю! 👋\n\n"
+        "Пришли мне номер заказа (ШК), и я найду соответствующие акты "
+        "и сгенерирую для тебя штрихкоды."
     )
 
 
 async def handle_barcode_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает номер заказа: ищет в Superset, отправляет штрихкоды."""
     order_number = update.message.text.strip().upper()
 
     if not order_number:
         await update.message.reply_text("Пожалуйста, отправьте номер заказа (ШК).")
         return
 
-    await update.message.reply_text(
-        f"🔍 Ищу данные для заказа: **{order_number}**...",
-        parse_mode=telegram.constants.ParseMode.MARKDOWN
-    )
+    await update.message.reply_text(f"🔍 Ищу данные для заказа: {order_number}...")
 
-    # 1. Запрос к Superset
     data = get_order_data(order_number)
 
-    # 2. Обработка ошибок
-    if not data or 'error' in data:
-        error_msg = data.get('error', 'Неизвестная ошибка') if data else 'Нет ответа от сервера'
+    if not data or "error" in data:
+        error_msg = data.get("error", "Неизвестная ошибка") if data else "Нет ответа от сервера"
         await update.message.reply_text(
             f"❌ {error_msg}",
             parse_mode=telegram.constants.ParseMode.MARKDOWN
         )
         return
 
-    act_to_warehouse   = data.get('actToWarehouse')
-    act_from_warehouse = data.get('actFromWarehouse')
+    act_to_warehouse   = data.get("actToWarehouse")
+    act_from_warehouse = data.get("actFromWarehouse")
+    movement_status    = data.get("movementStatus", "")
+
+    # Статусы движения заказа
+    if movement_status:
+        await update.message.reply_text(
+            f"📦 *Движение заказа {order_number}:*\n\n{movement_status}",
+            parse_mode=telegram.constants.ParseMode.MARKDOWN
+        )
 
     if not act_to_warehouse and not act_from_warehouse:
         await update.message.reply_text(
-            f"⚠️ Для заказа **{order_number}** данные актов пусты.",
+            f"⚠️ Для заказа *{order_number}* данные актов пусты.",
             parse_mode=telegram.constants.ParseMode.MARKDOWN
         )
         return
 
-    # 3. Генерация и отправка штрихкодов
+    # Штрихкоды
     try:
         if act_to_warehouse:
-            img_to_buffer = generate_barcode_image(act_to_warehouse)
+            img = generate_barcode_image(act_to_warehouse)
             await update.message.reply_photo(
-                photo=img_to_buffer,
-                caption=f"✅ **Акт на склад:** `{act_to_warehouse}`",
+                photo=img,
+                caption=f"✅ *Акт на склад:* `{act_to_warehouse}`",
                 parse_mode=telegram.constants.ParseMode.MARKDOWN
             )
-
         if act_from_warehouse:
-            img_from_buffer = generate_barcode_image(act_from_warehouse)
+            img = generate_barcode_image(act_from_warehouse)
             await update.message.reply_photo(
-                photo=img_from_buffer,
-                caption=f"✅ **Акт со склада:** `{act_from_warehouse}`",
+                photo=img,
+                caption=f"✅ *Акт со склада:* `{act_from_warehouse}`",
                 parse_mode=telegram.constants.ParseMode.MARKDOWN
             )
-
     except Exception as e:
         print(f"Ошибка генерации штрихкода: {e}")
         await update.message.reply_text("❌ Внутренняя ошибка при генерации штрихкода.")
@@ -213,7 +244,6 @@ async def handle_barcode_request(update: Update, context: ContextTypes.DEFAULT_T
 # ==============================================================================
 
 def main() -> None:
-    """Запуск бота."""
     if not TELEGRAM_BOT_TOKEN:
         print("ОШИБКА: TELEGRAM_BOT_TOKEN не задан.")
         return
@@ -234,5 +264,5 @@ def main() -> None:
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
