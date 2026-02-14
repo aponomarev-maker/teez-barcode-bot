@@ -1,175 +1,231 @@
-import os
+import telegram
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import requests
-import logging
-from telegram import Update, InputFile
-from telegram.ext import Application, MessageHandler, filters, CommandHandler 
-from io import BytesIO 
-from barcode import Code128 
-from barcode.writer import ImageWriter 
+from barcode import Code128
+from barcode.writer import ImageWriter
+from io import BytesIO
+import os
+import telegram.ext
 
-# Настройка логирования
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+# ==============================================================================
+# НАСТРОЙКИ — все значения берутся из переменных окружения Railway
+# ==============================================================================
 
-# Глобальные переменные (токен и URL берутся из переменных окружения Render)
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GOOGLE_SHEETS_API_URL = os.environ.get("GOOGLE_SHEETS_API_URL")
+TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN")
+SUPERSET_URL        = os.environ.get("SUPERSET_URL", "https://superset.dwh.teez.kz")
+SUPERSET_USERNAME   = os.environ.get("SUPERSET_USERNAME")
+SUPERSET_PASSWORD   = os.environ.get("SUPERSET_PASSWORD")
 
-# --- ФУНКЦИЯ: Генерация изображения штрихкода ---
-def generate_barcode_image(data_text):
-    """Генерирует изображение штрихкода Code128 в памяти."""
-    if not data_text:
+# ID датасета (виртуальной таблицы) в Superset.
+# Как узнать: откройте нужный дашборд → Chart → ⋮ → Edit → вкладка Data,
+# в адресной строке будет /explore/?datasource_type=table&datasource_id=ХХХ
+SUPERSET_DATASET_ID = int(os.environ.get("SUPERSET_DATASET_ID", "0"))
+
+
+# ==============================================================================
+# РАБОТА С SUPERSET API
+# ==============================================================================
+
+def get_superset_token() -> str | None:
+    """Авторизуется в Superset и возвращает access_token."""
+    url = f"{SUPERSET_URL}/api/v1/security/login"
+    payload = {
+        "username": SUPERSET_USERNAME,
+        "password": SUPERSET_PASSWORD,
+        "provider": "db",
+        "refresh": True
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=15)
+        response.raise_for_status()
+        return response.json().get("access_token")
+    except Exception as e:
+        print(f"ОШИБКА АВТОРИЗАЦИИ SUPERSET: {e}")
         return None
-        
-    buffer = BytesIO()
-    
-    writer_options = {
-        'module_width': 0.3,
-        'module_height': 15,
-        'write_text': True,
-        'font_size': 12,
-        'text_distance': 5,
-        'quiet_zone': 4,
+
+
+def get_order_data(order_number: str) -> dict | None:
+    """
+    Запрашивает из Superset данные по конкретному номеру заказа (external_id).
+    Возвращает словарь с полями или None при ошибке.
+    """
+    token = get_superset_token()
+    if not token:
+        return {"error": "Не удалось авторизоваться в базе данных."}
+
+    url = f"{SUPERSET_URL}/api/v1/chart/data"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
     }
 
-    code128 = Code128(data_text, writer=ImageWriter())
-    code128.write(buffer, options=writer_options)
+    # Запрашиваем только нужные столбцы и фильтруем по номеру заказа
+    payload = {
+        "datasource": {
+            "id": SUPERSET_DATASET_ID,
+            "type": "table"
+        },
+        "force": False,
+        "queries": [
+            {
+                "columns": [
+                    "external_id",
+                    "накладная на склад",
+                    "накладная со склада"
+                ],
+                "filters": [
+                    {
+                        "col": "external_id",
+                        "op": "==",
+                        "val": order_number
+                    }
+                ],
+                "row_limit": 1
+            }
+        ]
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+
+        # Разбираем ответ Superset
+        data = result.get("result", [])
+        if not data or not data[0].get("data"):
+            return {"error": f"Заказ **{order_number}** не найден в базе данных."}
+
+        row = data[0]["data"][0]
+        act_to   = str(row.get("накладная на склад") or "").strip()
+        act_from = str(row.get("накладная со склада") or "").strip()
+
+        return {
+            "actToWarehouse":   act_to,
+            "actFromWarehouse": act_from
+        }
+
+    except requests.exceptions.HTTPError as e:
+        print(f"ОШИБКА HTTP SUPERSET: {e} | Ответ: {e.response.text[:300]}")
+        return {"error": "Ошибка при запросе к базе данных (HTTP)."}
+    except Exception as e:
+        print(f"ОШИБКА SUPERSET: {e}")
+        return {"error": "Внутренняя ошибка при запросе к базе данных."}
+
+
+# ==============================================================================
+# ГЕНЕРАЦИЯ ШТРИХКОДА CODE-128
+# ==============================================================================
+
+def generate_barcode_image(data: str) -> BytesIO:
+    """Генерирует штрихкод CODE-128 и возвращает его как BytesIO."""
+    writer = ImageWriter()
+    code128 = Code128(data, writer=writer)
+    buffer = BytesIO()
+    code128.write(buffer, {'module_height': 6, 'write_text': True})
     buffer.seek(0)
     return buffer
 
-# --- НОВАЯ ФУНКЦИЯ: Получение метки времени (без изменений) ---
-def fetch_db_timestamp():
-    """Отправляет быстрый запрос на GAS для получения метки времени обновления данных."""
-    if not GOOGLE_SHEETS_API_URL:
-        return 'Н/Д'
 
-    try:
-        response = requests.get(GOOGLE_SHEETS_API_URL, params={'get_timestamp': 'true'}, timeout=5) 
-        response.raise_for_status()
+# ==============================================================================
+# ОБРАБОТЧИКИ TELEGRAM
+# ==============================================================================
 
-        response_data = response.json()
-        return response_data.get('timestamp', 'Н/Д (некорректный ответ)')
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Ошибка HTTP-запроса при получении метки времени: {e}")
-        return 'Н/Д (ошибка связи)'
-    except Exception as e:
-        logging.error(f"Неизвестная ошибка при получении метки времени: {e}")
-        return 'Н/Д (ошибка)'
-
-# --- Функция для запроса данных из Google Apps Script (основная) ---
-def find_order_info(order_number):
-    """Отправляет запрос на Google Apps Script и возвращает JSON с данными и текстом."""
-    if not GOOGLE_SHEETS_API_URL:
-        return {'error': "⚠️ Ошибка конфигурации: GOOGLE_SHEETS_API_URL не задан."}
-
-    try:
-        response = requests.get(GOOGLE_SHEETS_API_URL, params={'order': order_number}, timeout=90)
-        response.raise_for_status()
-
-        response_data = response.json()
-        return response_data
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Ошибка HTTP-запроса к Google Apps Script: {e}")
-        return {'error': "❌ Ошибка связи с сервером данных. Попробуйте позже."}
-    except ValueError:
-        logging.error(f"Ошибка декодирования JSON: {response.text}")
-        return {'error': "❌ Ошибка: Ответ сервера данных не является корректным JSON."}
-    except Exception as e:
-        logging.error(f"Неизвестная ошибка при обработке запроса: {e}")
-        return {'error': "❌ Произошла непредвиденная ошибка."}
-
-
-async def message_handler(update: Update, context):
-    """Обрабатывает входящие сообщения, генерирует штрихкоды и отправляет ответ."""
-    order_number = update.message.text.strip()
-    
-    if order_number.lower() == '/start':
-        return
-
-    # 1. Получаем метку времени и отправляем немедленный ответ
-    db_timestamp = fetch_db_timestamp() 
-    initial_message = (
-        f"🔍 Ищу Акты для заказа: **{order_number}**\n"
-        f"База данных от {db_timestamp}"
-    )
-    await update.message.reply_text(initial_message, parse_mode='Markdown')
-
-    # 2. Получаем JSON-ответ от GAS (основной запрос)
-    response_data = find_order_info(order_number)
-    
-    # 3. Обработка ошибки
-    if 'error' in response_data:
-        await update.message.reply_text(response_data['error'])
-        return
-
-    # 4. Получение данных и текста
-    info_message = response_data.get('text', "Информация не найдена.")
-    act_to_data = response_data.get('actToWarehouse', '').strip()
-    act_from_data = response_data.get('actFromWarehouse', '').strip()
-    movement_status = response_data.get('movementStatus', '').strip() 
-
-    # 5. Сначала отправляем главное текстовое сообщение (об успехе/ошибке)
-    await update.message.reply_text(info_message, parse_mode='Markdown')
-    
-    # 6. Отправка штрихкодов в виде изображений
-    
-    # Акт на склад
-    if act_to_data:
-        image_buffer = generate_barcode_image(act_to_data)
-        if image_buffer:
-            await update.message.reply_photo(
-                photo=InputFile(image_buffer, filename='act_to_warehouse.png'),
-                caption=f"Акт на склад: `{act_to_data}`",
-                parse_mode='Markdown'
-            )
-
-    # Акт со склада
-    if act_from_data:
-        image_buffer = generate_barcode_image(act_from_data)
-        if image_buffer:
-            await update.message.reply_photo(
-                photo=InputFile(image_buffer, filename='act_from_warehouse.png'),
-                caption=f"Акт со склада: `{act_from_data}`",
-                parse_mode='Markdown'
-            )
-            
-    # 7. Отправляем статусы движения (последнее сообщение)
-    if movement_status:
-        status_message = (
-            f"**🗓️ Статусы движения заказа:**\n\n" 
-            f"{movement_status}"
-        )
-        await update.message.reply_text(
-            status_message,
-            parse_mode='Markdown' # Указываем, что нужно парсить Markdown
-        )
-
-async def start_command(update: Update, context):
-    """Отправляет приветственное сообщение при команде /start."""
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Приветственное сообщение."""
     welcome_message = (
-        "👋 Привет! Я бот для проверки актов. "
-        "Пришли мне **номер заказа** и я найду соответствующие акты и сгенерирую для тебя штрихкоды."
+        "Потерялся Акт отгрузки? Не грусти! Я всё исправлю! 👋\n\n"
+        "**Пришли мне номер заказа (ШК)**, и я найду соответствующие акты "
+        "и сгенерирую для тебя штрихкоды."
     )
-    await update.message.reply_text(welcome_message, parse_mode='Markdown')
+    await update.message.reply_text(
+        welcome_message, parse_mode=telegram.constants.ParseMode.MARKDOWN
+    )
 
-def main():
-    """Запускает бота."""
+
+async def handle_barcode_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает номер заказа: ищет в Superset, отправляет штрихкоды."""
+    order_number = update.message.text.strip().upper()
+
+    if not order_number:
+        await update.message.reply_text("Пожалуйста, отправьте номер заказа (ШК).")
+        return
+
+    await update.message.reply_text(
+        f"🔍 Ищу данные для заказа: **{order_number}**...",
+        parse_mode=telegram.constants.ParseMode.MARKDOWN
+    )
+
+    # 1. Запрос к Superset
+    data = get_order_data(order_number)
+
+    # 2. Обработка ошибок
+    if not data or 'error' in data:
+        error_msg = data.get('error', 'Неизвестная ошибка') if data else 'Нет ответа от сервера'
+        await update.message.reply_text(
+            f"❌ {error_msg}",
+            parse_mode=telegram.constants.ParseMode.MARKDOWN
+        )
+        return
+
+    act_to_warehouse   = data.get('actToWarehouse')
+    act_from_warehouse = data.get('actFromWarehouse')
+
+    if not act_to_warehouse and not act_from_warehouse:
+        await update.message.reply_text(
+            f"⚠️ Для заказа **{order_number}** данные актов пусты.",
+            parse_mode=telegram.constants.ParseMode.MARKDOWN
+        )
+        return
+
+    # 3. Генерация и отправка штрихкодов
+    try:
+        if act_to_warehouse:
+            img_to_buffer = generate_barcode_image(act_to_warehouse)
+            await update.message.reply_photo(
+                photo=img_to_buffer,
+                caption=f"✅ **Акт на склад:** `{act_to_warehouse}`",
+                parse_mode=telegram.constants.ParseMode.MARKDOWN
+            )
+
+        if act_from_warehouse:
+            img_from_buffer = generate_barcode_image(act_from_warehouse)
+            await update.message.reply_photo(
+                photo=img_from_buffer,
+                caption=f"✅ **Акт со склада:** `{act_from_warehouse}`",
+                parse_mode=telegram.constants.ParseMode.MARKDOWN
+            )
+
+    except Exception as e:
+        print(f"Ошибка генерации штрихкода: {e}")
+        await update.message.reply_text("❌ Внутренняя ошибка при генерации штрихкода.")
+
+
+# ==============================================================================
+# ЗАПУСК БОТА
+# ==============================================================================
+
+def main() -> None:
+    """Запуск бота."""
     if not TELEGRAM_BOT_TOKEN:
-        logging.error("TELEGRAM_BOT_TOKEN не найден. Бот не может быть запущен.")
+        print("ОШИБКА: TELEGRAM_BOT_TOKEN не задан.")
+        return
+    if not SUPERSET_USERNAME or not SUPERSET_PASSWORD:
+        print("ОШИБКА: SUPERSET_USERNAME или SUPERSET_PASSWORD не заданы.")
+        return
+    if SUPERSET_DATASET_ID == 0:
+        print("ОШИБКА: SUPERSET_DATASET_ID не задан (или равен 0).")
         return
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(telegram.ext.CommandHandler("start", start_command))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_barcode_request)
+    )
 
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    print("Бот запущен. Источник данных: Superset API.")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    logging.info("Бот запущен...")
-    application.run_polling(poll_interval=5)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-
-
