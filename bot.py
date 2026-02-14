@@ -106,7 +106,9 @@ def get_order_data(order_number: str) -> dict | None:
         }
 
     except requests.exceptions.HTTPError as e:
-        print(f"ОШИБКА HTTP SUPERSET: {e} | Ответ: {e.response.text[:300]}")
+        print(f"ОШИБКА HTTP SUPERSET: {e}")
+        print(f"URL запроса: {url}")
+        print(f"Ответ сервера: {e.response.text[:500]}")
         return {"error": "Ошибка при запросе к базе данных (HTTP)."}
     except Exception as e:
         print(f"ОШИБКА SUPERSET: {e}")
@@ -229,4 +231,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
