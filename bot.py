@@ -33,7 +33,7 @@ def get_superset_token() -> str | None:
     payload = {
         "username": SUPERSET_USERNAME,
         "password": SUPERSET_PASSWORD,
-        "provider": "db",
+        "provider": "ldap",
         "refresh": True
     }
     try:
@@ -229,3 +229,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
