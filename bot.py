@@ -70,7 +70,7 @@ def get_order_data(order_number: str) -> dict | None:
         "queries": [
             {
                 "columns": [
-                    "external_id",
+                    "external_barcode",
                     "накладная на склад",
                     "накладная со склада"
                 ],
@@ -81,7 +81,7 @@ def get_order_data(order_number: str) -> dict | None:
                         "val": "No filter"
                     },
                     {
-                        "col": "external_id",
+                        "col": "external_barcode",
                         "op": "==",
                         "val": order_number
                     }
@@ -98,7 +98,8 @@ def get_order_data(order_number: str) -> dict | None:
 
         # Разбираем ответ Superset
         data = result.get("result", [])
-        if not data or not data[0].get("data"):
+        if data and data[0].get("data"):
+            if not data or not data[0].get("data"):
             return {"error": f"Заказ **{order_number}** не найден в базе данных."}
 
         row = data[0]["data"][0]
