@@ -98,8 +98,7 @@ def get_order_data(order_number: str) -> dict | None:
 
         # Разбираем ответ Superset
         data = result.get("result", [])
-        if data and data[0].get("data"):
-            if not data or not data[0].get("data"):
+        if not data or not data[0].get("data"):
             return {"error": f"Заказ **{order_number}** не найден в базе данных."}
 
         row = data[0]["data"][0]
