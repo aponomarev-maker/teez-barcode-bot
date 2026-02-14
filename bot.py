@@ -76,6 +76,11 @@ def get_order_data(order_number: str) -> dict | None:
                 ],
                 "filters": [
                     {
+                        "col": "created_date",
+                        "op": "TEMPORAL_RANGE",
+                        "val": "No filter"
+                    },
+                    {
                         "col": "external_id",
                         "op": "==",
                         "val": order_number
