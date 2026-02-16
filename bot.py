@@ -61,7 +61,7 @@ def format_date_value(val):
         return None, None
     try:
         if isinstance(val, (int, float)):
-            dt = datetime.fromtimestamp(val / 1000, tz=TZ_PLUS5)
+            dt = datetime.fromtimestamp(val / 1000, tz=timezone.utc)
             return dt.strftime("%d.%m.%Y %H:%M"), val
         else:
             s = str(val).replace("T", " ")[:16]
@@ -266,3 +266,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
